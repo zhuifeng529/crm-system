@@ -26,32 +26,79 @@ function slugify(title: string): string {
   return text.replace(/[^\w\u4e00-\u9fff-]+/g, "") || "section";
 }
 
+/** 与后端 toc 顺序一致的章节 id 队列（跳过 H1）。 */
+function tocHeadingIds(toc: ManualTocItem[]): string[] {
+  return toc.filter((item) => item.level >= 2).map((item) => item.id);
+}
+
+function buildMarkdownComponents(orderedIds: string[]) {
+  // 每次渲染新建游标，避免 useMemo 闭包跨次渲染累加导致 id 与 toc 漂移（CR-CYGN5-01）
+  let cursor = 0;
+  const takeId = (fallbackTitle: string) => {
+    const fromToc = orderedIds[cursor];
+    cursor += 1;
+    return fromToc ?? slugify(fallbackTitle);
+  };
+
+  return {
+    h1: ({ children }: { children?: ReactNode }) => <h1>{children}</h1>,
+    h2: ({ children }: { children?: ReactNode }) => {
+      const text = headingText(children);
+      return <h2 id={takeId(text)}>{children}</h2>;
+    },
+    h3: ({ children }: { children?: ReactNode }) => {
+      const text = headingText(children);
+      return <h3 id={takeId(text)}>{children}</h3>;
+    },
+    h4: ({ children }: { children?: ReactNode }) => {
+      const text = headingText(children);
+      return <h4 id={takeId(text)}>{children}</h4>;
+    },
+  };
+}
+
 export function UserManualDrawer({ open, onClose }: Props) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [manual, setManual] = useState<UserManual | null>(null);
-
-  const load = async () => {
-    setLoading(true);
-    setError(null);
-    try {
-      const data = await fetchUserManual();
-      setManual(data);
-    } catch (err) {
-      setManual(null);
-      setError(getErrorMessage(err, "说明书加载失败，请稍后重试"));
-    } finally {
-      setLoading(false);
-    }
-  };
+  const [reloadToken, setReloadToken] = useState(0);
 
   useEffect(() => {
-    if (open) {
-      void load();
+    if (!open) {
+      return;
     }
-  }, [open]);
+
+    let cancelled = false;
+    const run = async () => {
+      setLoading(true);
+      setError(null);
+      try {
+        const data = await fetchUserManual();
+        if (!cancelled) {
+          setManual(data);
+        }
+      } catch (err) {
+        if (!cancelled) {
+          setManual(null);
+          setError(getErrorMessage(err, "说明书加载失败，请稍后重试"));
+        }
+      } finally {
+        if (!cancelled) {
+          setLoading(false);
+        }
+      }
+    };
+
+    void run();
+    return () => {
+      cancelled = true;
+    };
+  }, [open, reloadToken]);
 
   const toc = useMemo(() => manual?.toc ?? [], [manual]);
+  const orderedIds = useMemo(() => tocHeadingIds(toc), [toc]);
+  // 故意不 memoize components：保证每次 React 渲染重置 id 游标
+  const markdownComponents = buildMarkdownComponents(orderedIds);
 
   const scrollToSection = (item: ManualTocItem) => {
     const el = document.getElementById(item.id);
@@ -60,31 +107,7 @@ export function UserManualDrawer({ open, onClose }: Props) {
     }
   };
 
-  const markdownComponents = useMemo(() => {
-    const seen: Record<string, number> = {};
-    const makeId = (raw: string) => {
-      const base = slugify(raw);
-      const count = seen[base] ?? 0;
-      seen[base] = count + 1;
-      return count === 0 ? base : `${base}-${count + 1}`;
-    };
-
-    return {
-      h1: ({ children }: { children?: ReactNode }) => <h1>{children}</h1>,
-      h2: ({ children }: { children?: ReactNode }) => {
-        const text = headingText(children);
-        return <h2 id={makeId(text)}>{children}</h2>;
-      },
-      h3: ({ children }: { children?: ReactNode }) => {
-        const text = headingText(children);
-        return <h3 id={makeId(text)}>{children}</h3>;
-      },
-      h4: ({ children }: { children?: ReactNode }) => {
-        const text = headingText(children);
-        return <h4 id={makeId(text)}>{children}</h4>;
-      },
-    };
-  }, [manual?.content]);
+  const requestReload = () => setReloadToken((n) => n + 1);
 
   return (
     <Drawer
@@ -103,7 +126,7 @@ export function UserManualDrawer({ open, onClose }: Props) {
           ) : null}
           <Button
             icon={<ReloadOutlined />}
-            onClick={() => void load()}
+            onClick={requestReload}
             disabled={loading}
             aria-label="重新加载说明书"
           >
@@ -126,7 +149,7 @@ export function UserManualDrawer({ open, onClose }: Props) {
             message="无法加载系统使用说明书"
             description={error}
             action={
-              <Button size="small" onClick={() => void load()}>
+              <Button size="small" onClick={requestReload}>
                 重试
               </Button>
             }

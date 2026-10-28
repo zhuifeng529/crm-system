@@ -48,8 +48,7 @@ export function LoginPage() {
           layout="vertical"
           requiredMark={false}
           onFinish={(values) => void onFinish(values)}
-          initialValues={{ username: "admin", password: "" }}
-        >
+          >
           <Form.Item
             label="用户名"
             name="username"
