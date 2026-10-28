@@ -4,17 +4,19 @@
 from __future__ import annotations
 
 import re
-from functools import lru_cache
-from pathlib import Path
+from datetime import UTC, datetime
 from typing import Any
 
 from app.config import BASE_DIR
 
 MANUAL_PATH = BASE_DIR / "content" / "user_manual.md"
+# 内容修订号：替换说明书正文并希望客户端感知版本变化时递增。
 MANUAL_VERSION = "1.0.0"
-MANUAL_UPDATED_AT = "2026-10-28T01:40:12Z"
 
 _HEADING_RE = re.compile(r"^(#{1,6})\s+(.+?)\s*$", re.MULTILINE)
+
+_cache: dict[str, Any] | None = None
+_cache_mtime_ns: int | None = None
 
 
 def _slugify(title: str) -> str:
@@ -49,20 +51,37 @@ def _extract_toc(markdown: str) -> list[dict[str, Any]]:
     return toc
 
 
-@lru_cache(maxsize=1)
+def clear_manual_cache() -> None:
+    global _cache, _cache_mtime_ns
+    _cache = None
+    _cache_mtime_ns = None
+
+
 def load_user_manual() -> dict[str, Any]:
+    """加载说明书；按文件 mtime 失效进程内缓存，updatedAt 取自 mtime。"""
+    global _cache, _cache_mtime_ns
     path = MANUAL_PATH
     if not path.is_file():
         raise FileNotFoundError(f"User manual not found: {path}")
+    mtime_ns = path.stat().st_mtime_ns
+    if _cache is not None and _cache_mtime_ns == mtime_ns:
+        return _cache
+
     content = path.read_text(encoding="utf-8")
-    return {
+    updated_at = datetime.fromtimestamp(mtime_ns / 1_000_000_000, tz=UTC).strftime(
+        "%Y-%m-%dT%H:%M:%SZ"
+    )
+    payload = {
         "title": _extract_title(content),
         "version": MANUAL_VERSION,
         "format": "markdown",
-        "updatedAt": MANUAL_UPDATED_AT,
+        "updatedAt": updated_at,
         "content": content,
         "toc": _extract_toc(content),
     }
+    _cache = payload
+    _cache_mtime_ns = mtime_ns
+    return payload
 
 
 def get_user_manual_meta() -> dict[str, Any]:
